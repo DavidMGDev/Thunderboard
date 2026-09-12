@@ -25,7 +25,8 @@ Tauri 2 + Svelte 5 + rodio.
   puts them *in* that folder. Deleting a row leaves the file, so the next sync
   brings it back; delete the file to be rid of it.
 - **List or gallery.** The same profile as a dense list of rows, or as a grid of
-  pads you click to fire. Toggle in the header; the choice sticks.
+  pads you click to fire. Toggle in the header; the choice sticks. In list view
+  rows drag vertically to reorder, with a line showing where the row will land.
 - **Drag and drop.** Drop audio files on the window, or use the `+` picker.
   Either way they are copied into the app's own directory (or into the profile's
   folder, if it has one), so the board survives you moving the originals.
@@ -90,6 +91,25 @@ Avoid: anything `Win+…` (the shell and PowerToys own most of it), `Alt+Space`
 (PowerToys Run), `Ctrl+Shift+Q/T/N/W/V` (these register fine and then break your
 browser), and `` Ctrl+Shift+` `` (VS Code's new terminal). The app greys these
 out with the reason when you try to bind one.
+
+### Two things that look like dead buttons
+
+Both of these cost an evening to find, so they are written down.
+
+**Settings would not open at all** if Windows reported two output devices with
+the same name — the device list is a keyed `{#each}`, and Svelte throws on a
+duplicate key, which kills the whole component before it paints. Nothing is
+logged where you would see it. `output_devices()` now sorts and dedups, which is
+correct anyway: every device here is matched by substring, so a repeated name
+was never a distinct choice.
+
+**Reordering uses pointer events, not HTML5 drag-and-drop.** The window has
+Tauri's `dragDropEnabled` on for dropping audio files in, and on Windows that
+hands the OS drop target to Tauri, leaving in-page `dragstart`/`dragover`
+unreliable. Rows are dragged by hand: a 4px threshold separates a drag from a
+click, the trailing click is swallowed so it does not also expand the row, and
+row midpoints are measured once per drag because the drop line is absolutely
+positioned and nothing reflows mid-gesture.
 
 ### Why re-binding hops to the main thread
 

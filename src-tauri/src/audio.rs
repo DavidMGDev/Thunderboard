@@ -68,11 +68,22 @@ fn device_name(d: &rodio::cpal::Device) -> Option<String> {
     d.description().ok().map(|x| x.name().to_string())
 }
 
+/// Sorted, with duplicate names collapsed.
+///
+/// Windows reports the same endpoint name more than once often enough - two
+/// drivers for one card, a device exposed per-format - and since every device
+/// here is matched by substring, a repeated name is not a distinct choice. It
+/// also used to crash the settings pane outright: the device list is rendered
+/// as a keyed `{#each}`, and Svelte throws on a duplicate key, so one repeated
+/// name meant Settings would not open at all.
 pub fn output_devices() -> Vec<String> {
-    rodio::cpal::default_host()
+    let mut names: Vec<String> = rodio::cpal::default_host()
         .output_devices()
         .map(|list| list.filter_map(|d| device_name(&d)).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    names.sort();
+    names.dedup();
+    names
 }
 
 pub fn spawn() -> Sender<Cmd> {

@@ -47,6 +47,75 @@
   /** Set when the mirrored folder could not be read - unplugged drive, rename. */
   let folderMissing = $state(false);
 
+  // --- drag to reorder, list view only ---------------------------------------
+  //
+  // Pointer events rather than HTML5 drag-and-drop: the window has Tauri's file
+  // drop enabled, which owns the OS drop target on Windows and leaves in-page
+  // dragstart/dragover unreliable.
+  /** Row being carried, so it can be dimmed. */
+  let dragIndex = $state<number | null>(null);
+  /** Gap the row would land in - 0..n, where n means "after the last row". */
+  let dropIndex = $state<number | null>(null);
+  let slotEls: HTMLElement[] = [];
+  /** Row midpoints, measured once per drag. */
+  let dragMids: number[] = [];
+  let pressY = 0;
+  let pressIndex = -1;
+  /** Past the threshold, so this gesture is a drag and not a click. */
+  let movedFar = false;
+
+  function startDrag(e: PointerEvent, i: number) {
+    if (view !== "list" || e.button !== 0) return;
+    // The row's own controls keep their clicks.
+    if ((e.target as HTMLElement).closest("button, input, label")) return;
+    pressIndex = i;
+    pressY = e.clientY;
+    movedFar = false;
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (pressIndex < 0 || !profile) return;
+    if (!movedFar) {
+      // A few pixels of slop, so a slightly shaky click still opens the row.
+      if (Math.abs(e.clientY - pressY) < 4) return;
+      movedFar = true;
+      dragIndex = pressIndex;
+      // Measured once: the drop line is absolutely positioned and the carried
+      // row keeps its space, so nothing reflows and these stay honest.
+      dragMids = slotEls
+        .slice(0, profile.sounds.length)
+        .map((el) => el.getBoundingClientRect())
+        .map((r) => r.top + r.height / 2);
+    }
+    const gap = dragMids.findIndex((mid) => e.clientY < mid);
+    dropIndex = gap === -1 ? dragMids.length : gap;
+  }
+
+  function onPointerUp() {
+    if (movedFar && dragIndex !== null && dropIndex !== null && profile) {
+      // Lifting the row out shifts every later gap up by one.
+      const to = dropIndex > dragIndex ? dropIndex - 1 : dropIndex;
+      if (to !== dragIndex) {
+        const list = [...profile.sounds];
+        const [moved] = list.splice(dragIndex, 1);
+        list.splice(to, 0, moved);
+        profile.sounds = list;
+      }
+    }
+    pressIndex = -1;
+    dragIndex = null;
+    dropIndex = null;
+    // movedFar survives until the click this gesture is about to fire is eaten.
+  }
+
+  /** Stops the drag's trailing click from also expanding the row it landed on. */
+  function swallowClickAfterDrag(e: MouseEvent) {
+    if (!movedFar) return;
+    movedFar = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }
+
   // Not in config.json: every write there re-registers every global hotkey, and
   // flipping the layout has no business unbinding your board for a frame.
   let view = $state<"list" | "gallery">(
@@ -312,7 +381,12 @@
 <!-- Capture phase: while a hotkey is being recorded the keystroke must not reach
      the focused row or input first, and stopPropagation only holds it back on
      the way down. -->
-<svelte:window onkeydowncapture={onKeydown} oncontextmenu={(e) => e.preventDefault()} />
+<svelte:window
+  onkeydowncapture={onKeydown}
+  oncontextmenu={(e) => e.preventDefault()}
+  onpointermove={onPointerMove}
+  onpointerup={onPointerUp}
+/>
 
 <div class="panel">
   {#if pitchOn}
@@ -418,21 +492,38 @@
 
     <div class="body" class:dragging class:gallery={view === "gallery"}>
       {#each profile.sounds as s, i (s.id)}
-        <SoundRow
-          bind:sound={profile.sounds[i]}
-          {view}
-          expanded={expandedId === s.id}
-          listening={listeningId === s.id}
-          failed={failedHotkeys.includes(s.hotkey)}
-          playing={playingId === s.id}
-          onToggle={() => (expandedId = expandedId === s.id ? null : s.id)}
-          onListen={() => {
-            listeningId = s.id;
-            settingsListening = null;
-          }}
-          onDelete={() => removeSound(s.id)}
-          onPreview={() => void previewNow(s.id)}
-        />
+        <!-- `display: contents` in gallery, so the pad grid is untouched. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="slot"
+          class:list={view === "list"}
+          class:lifted={dragIndex === i}
+          bind:this={slotEls[i]}
+          onpointerdown={(e) => startDrag(e, i)}
+          onclickcapture={swallowClickAfterDrag}
+        >
+          {#if view === "list" && dropIndex === i}
+            <div class="drop-line"></div>
+          {/if}
+          {#if view === "list" && dropIndex === profile.sounds.length && i === profile.sounds.length - 1}
+            <div class="drop-line after"></div>
+          {/if}
+          <SoundRow
+            bind:sound={profile.sounds[i]}
+            {view}
+            expanded={expandedId === s.id}
+            listening={listeningId === s.id}
+            failed={failedHotkeys.includes(s.hotkey)}
+            playing={playingId === s.id}
+            onToggle={() => (expandedId = expandedId === s.id ? null : s.id)}
+            onListen={() => {
+              listeningId = s.id;
+              settingsListening = null;
+            }}
+            onDelete={() => removeSound(s.id)}
+            onPreview={() => void previewNow(s.id)}
+          />
+        </div>
       {/each}
 
       {#if profile.sounds.length === 0}
@@ -738,6 +829,32 @@
     grid-column: 1 / -1;
     margin: 0;
   }
+  /* A slot is pure plumbing in gallery; in list it anchors the drop line. */
+  .slot {
+    display: contents;
+  }
+  .slot.list {
+    display: block;
+    position: relative;
+  }
+  .slot.lifted {
+    opacity: 0.4;
+  }
+  .drop-line {
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    top: -1px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    pointer-events: none;
+  }
+  .drop-line.after {
+    top: auto;
+    bottom: -1px;
+  }
+
   .body.dragging {
     outline: 1px dashed var(--accent);
     outline-offset: -1px;

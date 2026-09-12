@@ -212,10 +212,12 @@
            supposed to expand the row, which is most of the row's width. The row
            itself is the button. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <span class="name" title="Double-click to rename" ondblclick={startRename}>
+      <span class="name" title={sound.name} ondblclick={startRename}>
         {sound.name}
       </span>
     {/if}
+
+    <button type="button" class="icon edit" title="Rename" onclick={startRename}>&#xE70F;</button>
 
     <button
       type="button"
@@ -359,11 +361,13 @@
     background: var(--stroke-strong);
     color: var(--fg);
   }
-  .icon.delete {
+  .icon.delete,
+  .icon.edit {
     opacity: 0;
     transition: opacity 120ms ease;
   }
-  .row:hover .icon.delete {
+  .row:hover .icon.delete,
+  .row:hover .icon.edit {
     opacity: 1;
   }
   .icon.delete:hover {
@@ -639,7 +643,7 @@
     white-space: normal;
     overflow-wrap: anywhere;
     line-height: 16px;
-    padding-right: 44px;
+    padding-right: 66px;
   }
   .row-wrap.gallery .chip {
     grid-area: chip;
@@ -655,6 +659,7 @@
     align-self: end;
   }
   .row-wrap.gallery .delete,
+  .row-wrap.gallery .edit,
   .row-wrap.gallery .expand {
     position: absolute;
     top: 6px;
@@ -677,6 +682,9 @@
   }
   .row-wrap.gallery .delete {
     right: 28px;
+  }
+  .row-wrap.gallery .edit {
+    right: 50px;
   }
   .row-wrap.gallery .panel {
     grid-column: 1 / -1;
