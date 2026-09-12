@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions for the Thunderboard window","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-hide","core:window:allow-show","core:window:allow-start-dragging","core:window:allow-minimize","core:event:default","opener:allow-reveal-item-in-dir","dialog:allow-open"]}}

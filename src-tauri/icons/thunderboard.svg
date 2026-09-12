@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- A soundboard pad with a bolt knocked out of it. The hole is what keeps it
+       from reading as a blob at 16px in the tray, and the accent tile is legible
+       on a light taskbar as well as a dark one, so no theme-swapped icon. -->
+  <path fill="#60cdff" d="M76 16H180A60 60 0 0 1 240 76V180A60 60 0 0 1 180 240H76A60 60 0 0 1 16 180V76A60 60 0 0 1 76 16Z"/>
+  <path fill="#003e5c" d="M108 52H168L146 116H184L94 204L112 144H72Z"/>
+</svg>

@@ -1,0 +1,67 @@
+/* WinUI 3 / Fluent dark tokens, matching the PowerToys palette. */
+:root {
+  --accent: #60cdff;
+  --fg: #ffffff;
+  --fg-2: rgba(255, 255, 255, 0.786);
+  --fg-3: rgba(255, 255, 255, 0.544);
+  --stroke: rgba(255, 255, 255, 0.0837);
+  --stroke-strong: rgba(255, 255, 255, 0.16);
+  --layer: rgba(255, 255, 255, 0.0512);
+  --hover: rgba(255, 255, 255, 0.0837);
+  --press: rgba(255, 255, 255, 0.0326);
+  --danger: #ff99a4;
+  --r-control: 4px;
+  --r-surface: 8px;
+
+  --caution: #fce100;
+  --caution-bg: rgba(252, 225, 0, 0.12);
+  --accent-bg: rgba(96, 205, 255, 0.12);
+  --success: #6ccb5f;
+  --danger-bg: rgba(255, 153, 164, 0.12);
+
+  color-scheme: dark;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  /* Opaque: DWM draws the shadow and rounds the corners outside the window,
+     so a transparent margin is not needed and would only eat clicks. */
+  background: #262626;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: default;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.24);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.36);
+}
