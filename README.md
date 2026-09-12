@@ -18,11 +18,17 @@ Tauri 2 + Svelte 5 + rodio.
   other to your headphones so you hear what you fired.
 - **Profiles.** Independent sets of sounds and bindings; switch from the header
   or with a hotkey.
+- **Folder profiles.** Point an empty profile at a folder and every clip inside
+  it, at any depth, becomes a row — no importing, no copying. It re-scans when
+  you open the window and on the sync button, and rows keep their hotkey,
+  volume, offset and position across syncs. Dropping files on a folder profile
+  puts them *in* that folder. Deleting a row leaves the file, so the next sync
+  brings it back; delete the file to be rid of it.
 - **List or gallery.** The same profile as a dense list of rows, or as a grid of
   pads you click to fire. Toggle in the header; the choice sticks.
 - **Drag and drop.** Drop audio files on the window, or use the `+` picker.
-  Either way they are copied into the app's own directory, so the board survives
-  you moving or deleting the originals.
+  Either way they are copied into the app's own directory (or into the profile's
+  folder, if it has one), so the board survives you moving the originals.
 - **Per-clip offset.** Downloaded clips often open with a beat of silence, which
   reads as lag when the hotkey is the punchline. A wide slider trims it; letting
   go of the slider plays the clip so you can hear whether you got it.
@@ -85,6 +91,15 @@ Avoid: anything `Win+…` (the shell and PowerToys own most of it), `Alt+Space`
 browser), and `` Ctrl+Shift+` `` (VS Code's new terminal). The app greys these
 out with the reason when you try to bind one.
 
+### Why re-binding hops to the main thread
+
+`tauri-plugin-global-shortcut` holds its registry mutex for the whole of a
+hotkey callback, and re-registering wants that same mutex. So re-binding from
+inside a callback — or from a worker thread while a key is being pressed — is a
+circular wait that hangs the main thread and takes *every* global hotkey down
+with it until you restart. `rebind()` therefore queues the work as a main-thread
+task, which keeps the mutex single-threaded. Don't call `apply()` directly.
+
 ## Known limits
 
 - **Fullscreen-exclusive games swallow `RegisterHotKey`.** Run the game
@@ -94,6 +109,8 @@ out with the reason when you try to bind one.
   and the stop hotkey are how you get out of it.
 - Deleting a sound removes the entry, not the file — another profile may point
   at it. The folder icon in the header opens the sounds folder for hand-pruning.
+- A folder profile re-scans on open and on demand, not on a watcher. Files added
+  to the folder while the window is already open need the sync button.
 - The NSIS installer is unsigned, so SmartScreen will warn on first run.
 
 ## Develop
@@ -102,7 +119,7 @@ out with the reason when you try to bind one.
 pnpm install
 pnpm tauri dev
 pnpm tauri build      # -> src-tauri/target/release/bundle/nsis
-cd src-tauri && cargo test   # pitch-walk logic
+cd src-tauri && cargo test   # pitch walk, config migration, folder sync
 ```
 
 Config and clips live in `%APPDATA%\com.davidmg.thunderboard\`

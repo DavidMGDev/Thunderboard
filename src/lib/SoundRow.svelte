@@ -29,7 +29,6 @@
   } = $props();
 
   let renaming = $state(false);
-  let armed = $state(false);
   let nameInput = $state<HTMLInputElement>();
 
   // failed wins over conflict; both only make sense once a shortcut is bound.
@@ -64,16 +63,6 @@
   function press() {
     if (view === "gallery") onPreview();
     else onToggle();
-  }
-
-  function handleDelete(e: MouseEvent) {
-    e.stopPropagation();
-    if (!armed) {
-      armed = true;
-      return;
-    }
-    armed = false;
-    onDelete();
   }
 
   function setMode(mode: Pitch["mode"]) {
@@ -195,16 +184,15 @@
         press();
       }
     }}
-    onmouseleave={() => (armed = false)}
   >
     <button
       type="button"
       class="icon play"
-      title={playing ? "Stop" : "Preview"}
+      title="Play"
       onclick={(e) => {
         e.stopPropagation();
         onPreview();
-      }}>{playing ? "" : ""}</button
+      }}>&#xE767;</button
     >
 
     {#if renaming}
@@ -232,9 +220,11 @@
     <button
       type="button"
       class="icon delete"
-      class:armed
-      title={armed ? "Click again to delete" : "Delete"}
-      onclick={handleDelete}>&#xE74D;</button
+      title="Delete"
+      onclick={(e) => {
+        e.stopPropagation();
+        onDelete();
+      }}>&#xE74D;</button
     >
 
     <button type="button" class="chip" class:listening class:failed class:caution title={chipTitle} onclick={(e) => { e.stopPropagation(); onListen(); }}>
@@ -378,11 +368,6 @@
   }
   .icon.delete:hover {
     color: var(--danger);
-  }
-  .icon.delete.armed {
-    opacity: 1;
-    color: var(--danger);
-    background: var(--danger-bg);
   }
 
   .name {

@@ -62,6 +62,10 @@ pub struct Profile {
     pub name: String,
     #[serde(default)]
     pub sounds: Vec<Sound>,
+    /// A folder this profile mirrors. Empty means the profile is hand-built and
+    /// its clips live in the app's own `sounds` directory.
+    #[serde(default)]
+    pub folder: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -95,7 +99,12 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             version: CONFIG_VERSION,
-            profiles: vec![Profile { id: uid(), name: "Default".into(), sounds: vec![] }],
+            profiles: vec![Profile {
+                id: uid(),
+                name: "Default".into(),
+                sounds: vec![],
+                folder: String::new(),
+            }],
             active: String::new(),
             output_device: "CABLE Input".into(),
             monitor_device: String::new(),
@@ -275,6 +284,7 @@ fn set_pitch_mod(app: &AppHandle, on: bool) {
     let _ = app.emit("pitch", on);
 }
 
+/// Queues a re-bind on the main thread. Never binds inline - see `rebind`.
 fn next_profile(app: &AppHandle) {
     let switched = {
         let state = app.state::<App>();
@@ -288,13 +298,37 @@ fn next_profile(app: &AppHandle) {
     };
     let _ = save(app);
     let _ = app.emit("profile", switched);
-    apply(app);
+    rebind(app);
 }
 
 // -------------------------------------------------------------- hotkeys -----
 
+/// Re-binds every hotkey, on the main thread, never inline.
+///
+/// The shortcut plugin holds its registry mutex for the whole of a hotkey
+/// callback, and `apply` wants that same mutex in order to unregister. So
+/// calling `apply` from inside a callback - or from a worker thread while a
+/// callback is running - is a circular wait that hangs the main thread, and
+/// with it every global hotkey, until the app is restarted. That is what made
+/// the stop key stop firing: one save during a keypress and it never came back.
+///
+/// Hopping to the main thread via a worker makes the hop a real queued task
+/// rather than an inline call, so the mutex is only ever taken by the main
+/// thread, and a callback and a re-bind can no longer overlap.
+fn rebind(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            apply(&handle);
+        });
+    });
+}
+
 /// Re-registers every shortcut from scratch and reports the ones Windows
 /// refused, which is the only way to find out that something else owns them.
+///
+/// Main thread only. Everything but first-run setup goes through `rebind`.
 fn apply(app: &AppHandle) -> Vec<String> {
     let cfg = app.state::<App>().cfg.lock().unwrap().clone();
 
@@ -322,12 +356,9 @@ fn apply(app: &AppHandle) -> Vec<String> {
         }
     };
 
-    if let Some(profile) = cfg.active_profile() {
-        for sound in &profile.sounds {
-            let id = sound.id.clone();
-            bind(&sound.hotkey, Box::new(move |app| play(app, &id, false)));
-        }
-    }
+    // The three app-wide controls bind first. Windows gives a combo to whoever
+    // asks for it first, so a sound bound over the stop key used to win and
+    // leave stop silently dead.
     bind(
         &cfg.pitch_hotkey,
         Box::new(|app| {
@@ -342,6 +373,12 @@ fn apply(app: &AppHandle) -> Vec<String> {
         }),
     );
     bind(&cfg.next_profile_hotkey, Box::new(next_profile));
+    if let Some(profile) = cfg.active_profile() {
+        for sound in &profile.sounds {
+            let id = sound.id.clone();
+            bind(&sound.hotkey, Box::new(move |app| play(app, &id, false)));
+        }
+    }
 
     let _ = app.emit("hotkeys", &failed);
     failed
@@ -367,59 +404,157 @@ fn load_config(state: State<App>) -> Config {
 }
 
 /// The UI owns the config document; Rust just persists it and re-binds.
-/// Returns the shortcuts that could not be registered.
+///
+/// Re-binding is queued rather than awaited, so the shortcuts that Windows
+/// refuses arrive on the `hotkeys` event instead of as a return value.
 #[tauri::command]
-fn save_config(app: AppHandle, config: Config) -> Result<Vec<String>, String> {
+fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
     *app.state::<App>().cfg.lock().unwrap() = config;
     save(&app)?;
-    Ok(apply(&app))
+    rebind(&app);
+    Ok(())
 }
 
-/// Copies dropped files into the app's own directory so the board keeps working
-/// after the originals are moved or deleted.
+const EXTS: [&str; 8] = ["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "wma"];
+
+fn is_audio(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .is_some_and(|e| EXTS.contains(&e.as_str()))
+}
+
+fn stem(path: &std::path::Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sound")
+        .to_string()
+}
+
+fn new_sound(path: &std::path::Path) -> Sound {
+    Sound {
+        id: uid(),
+        name: stem(path),
+        file: path.to_string_lossy().into_owned(),
+        hotkey: String::new(),
+        volume: 1.0,
+        offset: 0.0,
+        pitch: Pitch::default(),
+    }
+}
+
+/// Windows paths differ only in case, and the same file reached two ways must
+/// not turn into two rows.
+fn same_file(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// Copies files into `dest`, or into the app's own directory when `dest` is
+/// None, so a hand-built board keeps working after the originals move.
+///
+/// A file already sitting in `dest` is adopted where it lies - a folder profile
+/// would otherwise grow a copy of every clip it already has.
 #[tauri::command]
-fn import_sounds(app: AppHandle, paths: Vec<String>) -> Result<Vec<Sound>, String> {
-    const EXTS: [&str; 8] = ["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "wma"];
-    let dir = data_dir(&app)?.join("sounds");
+fn import_sounds(
+    app: AppHandle,
+    paths: Vec<String>,
+    dest: Option<String>,
+) -> Result<Vec<Sound>, String> {
+    let dir = match dest.filter(|d| !d.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => data_dir(&app)?.join("sounds"),
+    };
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let mut imported = Vec::new();
     for path in paths {
         let src = PathBuf::from(&path);
+        if !is_audio(&src) {
+            continue;
+        }
+        if src.parent() == Some(dir.as_path()) {
+            imported.push(new_sound(&src));
+            continue;
+        }
         let ext = src
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
-        if !EXTS.contains(&ext.as_str()) {
-            continue;
-        }
-        let stem = src
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("sound")
-            .to_string();
+        let name = stem(&src);
 
         // Two clips both called "airhorn.mp3" would otherwise silently overwrite.
-        let mut dest = dir.join(format!("{stem}.{ext}"));
+        let mut target = dir.join(format!("{name}.{ext}"));
         let mut n = 1;
-        while dest.exists() {
-            dest = dir.join(format!("{stem} ({n}).{ext}"));
+        while target.exists() {
+            target = dir.join(format!("{name} ({n}).{ext}"));
             n += 1;
         }
-        fs::copy(&src, &dest).map_err(|e| format!("{path}: {e}"))?;
-
-        imported.push(Sound {
-            id: uid(),
-            name: stem,
-            file: dest.to_string_lossy().into_owned(),
-            hotkey: String::new(),
-            volume: 1.0,
-            offset: 0.0,
-            pitch: Pitch::default(),
-        });
+        fs::copy(&src, &target).map_err(|e| format!("{path}: {e}"))?;
+        imported.push(new_sound(&target));
     }
     Ok(imported)
+}
+
+/// Every audio file under `dir`, depth first. Unreadable subfolders are skipped
+/// rather than failing the whole scan - one locked directory should not cost
+/// you the rest of the board.
+fn audio_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            audio_files(&path, out);
+        } else if is_audio(&path) {
+            found.push(path);
+        }
+    }
+    found.sort();
+    out.append(&mut found);
+}
+
+/// Reconciles a folder profile against what is actually on disk.
+///
+/// Rows that still have their file keep their position, hotkey and tuning;
+/// rows whose file is gone drop out; anything new lands at the end. Keeping
+/// the order stable matters more than it sounds - the hotkeys are muscle
+/// memory, and a re-sort would shuffle the whole board under your fingers.
+///
+/// ponytail: O(n*m) scan. Fine for a folder of clips; reach for a set if
+/// someone points this at a music library.
+fn merge_folder(existing: &[Sound], files: Vec<PathBuf>) -> Vec<Sound> {
+    let found: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    let mut out: Vec<Sound> = existing
+        .iter()
+        .filter(|s| found.iter().any(|f| same_file(f, &s.file)))
+        .cloned()
+        .collect();
+
+    for path in &files {
+        let file = path.to_string_lossy();
+        if !out.iter().any(|s| same_file(&s.file, &file)) {
+            out.push(new_sound(path));
+        }
+    }
+    out
+}
+
+/// Re-reads a profile's folder. Cheap enough to run every time the window
+/// opens: one directory walk, no decoding, no disk reads beyond the listing.
+#[tauri::command]
+fn sync_folder(dir: String, existing: Vec<Sound>) -> Result<Vec<Sound>, String> {
+    let root = PathBuf::from(&dir);
+    if !root.is_dir() {
+        return Err(format!("{dir} is not a folder"));
+    }
+    let mut files = Vec::new();
+    audio_files(&root, &mut files);
+    Ok(merge_folder(&existing, files))
 }
 
 #[tauri::command]
@@ -580,6 +715,7 @@ pub fn run() {
             load_config,
             save_config,
             import_sounds,
+            sync_folder,
             list_devices,
             preview,
             stop_all,
@@ -746,6 +882,7 @@ mod tests {
             profiles: vec![Profile {
                 id: "p".into(),
                 name: "Default".into(),
+                folder: String::new(),
                 sounds: vec![
                     sound("a", Pitch::default()),
                     sound("b", Pitch::default()),
@@ -769,6 +906,40 @@ mod tests {
         let before = format!("{old:?}");
         assert!(!migrate(&mut old));
         assert_eq!(before, format!("{old:?}"));
+    }
+
+    #[test]
+    fn folder_sync_keeps_tuning_and_order() {
+        let mut tuned = sound("a", Pitch::default());
+        tuned.file = r"C:\clips\air.mp3".into();
+        tuned.hotkey = "Ctrl+Shift+Digit1".into();
+        tuned.volume = 0.4;
+        let mut gone = sound("b", Pitch::default());
+        gone.file = r"C:\clips\deleted.mp3".into();
+
+        let on_disk = vec![
+            // Same file, different case: Windows, so this is the same clip.
+            PathBuf::from(r"C:\CLIPS\air.mp3"),
+            PathBuf::from(r"C:\clips\new.wav"),
+        ];
+        let out = merge_folder(&[tuned.clone(), gone], on_disk.clone());
+
+        // The tuned row survives, in place, with everything it had.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, tuned.id);
+        assert_eq!(out[0].hotkey, "Ctrl+Shift+Digit1");
+        assert_eq!(out[0].volume, 0.4);
+        // The deleted file dropped out and the new one arrived, named by stem.
+        assert_eq!(out[1].name, "new");
+        assert!(out[1].hotkey.is_empty());
+        assert!(!out.iter().any(|s| s.file.contains("deleted")));
+
+        // Syncing again with nothing changed must not churn ids or order.
+        let again = merge_folder(&out, on_disk);
+        assert_eq!(
+            again.iter().map(|s| &s.id).collect::<Vec<_>>(),
+            out.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
     }
 
     #[test]

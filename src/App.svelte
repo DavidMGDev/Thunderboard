@@ -13,6 +13,7 @@
     preview,
     setPitchMod,
     soundsDir,
+    syncFolder,
     uid,
     quit,
     type Config,
@@ -35,10 +36,16 @@
   let settingsListening = $state<"pitchHotkey" | "stopHotkey" | "nextProfileHotkey" | null>(null);
   let settingsOpen = $state(false);
   let profileFlyoutOpen = $state(false);
-  let armedProfileId = $state<string | null>(null);
   let renamingProfileId = $state<string | null>(null);
   let dragging = $state(false);
-  let quitConfirmOpen = $state(false);
+
+  /** A pending destructive action, or null. One dialog serves all of them. */
+  let confirming = $state<{ title: string; body: string; label: string; act: () => void } | null>(
+    null,
+  );
+
+  /** Set when the mirrored folder could not be read - unplugged drive, rename. */
+  let folderMissing = $state(false);
 
   // Not in config.json: every write there re-registers every global hotkey, and
   // flipping the layout has no business unbinding your board for a frame.
@@ -84,7 +91,7 @@
     const snapshot = config;
     window.clearTimeout(saveHandle);
     saveHandle = window.setTimeout(async () => {
-      failedHotkeys = await saveConfig(snapshot);
+      await saveConfig(snapshot);
     }, 250);
   });
 
@@ -105,18 +112,47 @@
     settingsListening = null;
     settingsOpen = false;
     profileFlyoutOpen = false;
-    armedProfileId = null;
     renamingProfileId = null;
     playingId = null;
     dragging = false;
-    quitConfirmOpen = false;
+    confirming = null;
+    // Opening the window is the cheap moment to catch up with the folder: one
+    // directory listing, and only for profiles that actually mirror one.
+    if (profile?.folder) void syncNow();
   }
 
+  /** Re-reads the mirrored folder. Rows keep their hotkeys, order and tuning. */
+  async function syncNow() {
+    const p = profile;
+    if (!p?.folder) return;
+    try {
+      p.sounds = await syncFolder(p.folder, p.sounds);
+      folderMissing = false;
+    } catch {
+      // Keep the rows we have rather than wiping a board over an absent drive.
+      folderMissing = true;
+    }
+  }
+
+  async function pickFolder() {
+    const p = profile;
+    if (!p) return;
+    const dir = await open({ directory: true });
+    if (typeof dir !== "string") return;
+    p.folder = dir;
+    await syncNow();
+  }
+
+  /**
+   * A folder profile gets the copies put in its folder and then re-scans, so
+   * the folder stays the single source of truth for what is on the board.
+   */
   async function add(paths: string[]) {
     const p = profile;
     if (!p) return;
-    const sounds = await importSounds(paths);
-    p.sounds.push(...sounds);
+    const sounds = await importSounds(paths, p.folder);
+    if (p.folder) await syncNow();
+    else p.sounds.push(...sounds);
   }
 
   onMount(() => {
@@ -140,10 +176,20 @@
 
   function removeSound(id: string) {
     const p = profile;
-    if (!p) return;
-    p.sounds = p.sounds.filter((s) => s.id !== id);
-    if (expandedId === id) expandedId = null;
-    if (listeningId === id) listeningId = null;
+    const sound = p?.sounds.find((s) => s.id === id);
+    if (!p || !sound) return;
+    confirming = {
+      title: `Delete "${sound.name}"?`,
+      body: p.folder
+        ? "Removes the row and its hotkey. The file stays in the folder, so the next sync brings it back - delete the file itself to be rid of it."
+        : "Removes the row and its hotkey. The audio file stays in the sounds folder.",
+      label: "Delete",
+      act: () => {
+        p.sounds = p.sounds.filter((s) => s.id !== id);
+        if (expandedId === id) expandedId = null;
+        if (listeningId === id) listeningId = null;
+      },
+    };
   }
 
   function togglePitch() {
@@ -156,7 +202,7 @@
   async function previewNow(id: string) {
     if (!config) return;
     window.clearTimeout(saveHandle);
-    failedHotkeys = await saveConfig(config);
+    await saveConfig(config);
     await preview(id);
   }
 
@@ -193,11 +239,13 @@
     if (!config) return;
     config.active = id;
     profileFlyoutOpen = false;
+    folderMissing = false;
+    if (profile?.folder) void syncNow();
   }
 
   function addProfile() {
     if (!config) return;
-    const p: Profile = { id: uid(), name: "New profile", sounds: [] };
+    const p: Profile = { id: uid(), name: "New profile", sounds: [], folder: "" };
     config.profiles.push(p);
     config.active = p.id;
     renamingProfileId = p.id;
@@ -206,13 +254,17 @@
   function removeProfile(p: Profile) {
     // A board with no profiles has nothing to be active, so the last one stays.
     if (!config || config.profiles.length <= 1) return;
-    if (armedProfileId !== p.id) {
-      armedProfileId = p.id;
-      return;
-    }
-    config.profiles = config.profiles.filter((x) => x.id !== p.id);
-    if (config.active === p.id) config.active = config.profiles[0].id;
-    armedProfileId = null;
+    const n = p.sounds.length;
+    confirming = {
+      title: `Delete profile "${p.name}"?`,
+      body: `${n} sound${n === 1 ? "" : "s"} and their hotkeys go with it. The audio files themselves stay on disk.`,
+      label: "Delete",
+      act: () => {
+        if (!config) return;
+        config.profiles = config.profiles.filter((x) => x.id !== p.id);
+        if (config.active === p.id) config.active = config.profiles[0].id;
+      },
+    };
   }
 
   /** Stops a control inside the flyout row from also selecting the profile. */
@@ -250,7 +302,7 @@
     if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
       return;
     }
-    if (quitConfirmOpen) quitConfirmOpen = false;
+    if (confirming) confirming = null;
     else if (settingsOpen) closeSettings();
     else if (profileFlyoutOpen) profileFlyoutOpen = false;
     else void win.hide();
@@ -304,8 +356,7 @@
                 {#if config.profiles.length > 1}
                   <button
                     class="flyout-icon"
-                    class:armed={armedProfileId === p.id}
-                    title={armedProfileId === p.id ? "Click again to delete" : "Delete profile"}
+                    title="Delete profile"
                     onclick={(e) => {
                       isolate(e);
                       removeProfile(p);
@@ -326,6 +377,16 @@
       </button>
 
       <div class="header-actions">
+        {#if profile.folder}
+          <button
+            class="icon"
+            class:caution={folderMissing}
+            title={folderMissing
+              ? `Cannot read ${profile.folder}`
+              : `Sync with ${profile.folder}`}
+            onclick={() => void syncNow()}>&#xE72C;</button
+          >
+        {/if}
         <button class="icon" title="Add sounds" onclick={pickFiles}>&#xE710;</button>
         <button class="icon" title="Open sounds folder" onclick={openSoundsFolder}>&#xE838;</button>
         <button
@@ -341,7 +402,17 @@
            app controls and these are window controls. -->
       <div class="caption">
         <button class="cap" title="Minimize to tray" onclick={() => void win.hide()}>&#xE921;</button>
-        <button class="cap close" title="Quit Thunderboard" onclick={() => (quitConfirmOpen = true)}>&#xE8BB;</button>
+        <button
+          class="cap close"
+          title="Quit Thunderboard"
+          onclick={() =>
+            (confirming = {
+              title: "Quit Thunderboard?",
+              body: "Hotkeys stop working until you launch it again. Minimize instead to keep it running in the tray.",
+              label: "Quit",
+              act: () => void quit(),
+            })}>&#xE8BB;</button
+        >
       </div>
     </header>
 
@@ -367,7 +438,22 @@
       {#if profile.sounds.length === 0}
         <div class="empty">
           <span class="empty-glyph">&#xE8E5;</span>
-          Drop audio files here, or press +
+          {#if profile.folder}
+            {folderMissing ? "That folder cannot be read right now." : "No audio in that folder yet."}
+            <span class="folder-path" title={profile.folder}>{profile.folder}</span>
+            <div class="empty-actions">
+              <button class="ghost" onclick={() => void syncNow()}>Sync now</button>
+              <button class="ghost" onclick={() => void pickFolder()}>Change folder</button>
+            </div>
+          {:else}
+            Drop audio files here, or press +
+            <div class="empty-actions">
+              <button class="ghost" onclick={() => void pickFolder()}>Set to folder</button>
+            </div>
+            <span class="empty-note">
+              Mirrors a folder instead: every clip in it joins the board, and stays in step.
+            </span>
+          {/if}
         </div>
       {/if}
 
@@ -406,22 +492,27 @@
       />
     {/if}
 
-    {#if quitConfirmOpen}
+    {#if confirming}
       <!-- Esc (capture-phase, above) and the Cancel button already cover keyboard dismissal. -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="quit-overlay" onclick={() => (quitConfirmOpen = false)}>
+      <div class="confirm-overlay" onclick={() => (confirming = null)}>
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="quit-panel" onclick={(e) => e.stopPropagation()}>
-          <span class="quit-title">Quit Thunderboard?</span>
-          <p class="quit-body">
-            Hotkeys stop working until you launch it again. Minimize instead to keep it running in
-            the tray.
-          </p>
-          <div class="quit-actions">
-            <button class="ghost" onclick={() => (quitConfirmOpen = false)}>Cancel</button>
-            <button class="quit-btn" onclick={() => void quit()}>Quit</button>
+        <div class="confirm-panel" onclick={(e) => e.stopPropagation()}>
+          <span class="confirm-title">{confirming.title}</span>
+          <p class="confirm-body">{confirming.body}</p>
+          <div class="confirm-actions">
+            <button class="ghost" onclick={() => (confirming = null)}>Cancel</button>
+            <!-- svelte-ignore a11y_autofocus -->
+            <button
+              class="danger-btn"
+              autofocus
+              onclick={() => {
+                confirming?.act();
+                confirming = null;
+              }}>{confirming.label}</button
+            >
           </div>
         </div>
       </div>
@@ -530,6 +621,9 @@
     background: var(--hover);
     color: var(--fg);
   }
+  .header-actions .icon.caution {
+    color: var(--caution);
+  }
   .caption {
     display: flex;
     align-self: stretch;
@@ -610,11 +704,6 @@
     background: var(--stroke-strong);
     color: var(--fg);
   }
-  .flyout-icon.armed {
-    opacity: 1;
-    color: var(--danger);
-    background: var(--danger-bg);
-  }
   .flyout-new {
     color: var(--fg-3);
     border-top: 1px solid var(--stroke);
@@ -671,6 +760,26 @@
   .empty-glyph {
     font-size: 16px;
   }
+  .empty-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .empty-note {
+    max-width: 260px;
+    color: var(--fg-3);
+    opacity: 0.8;
+    font-size: 11px;
+  }
+  .folder-path {
+    max-width: 100%;
+    color: var(--fg-2);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl; /* keep the leaf folder visible when the path is long */
+  }
 
   .drop-label {
     position: absolute;
@@ -716,8 +825,8 @@
     background: var(--caution-bg);
   }
 
-  /* Quit confirmation - no transition, matches the app's no-motion-on-overlays rule. */
-  .quit-overlay {
+  /* Confirmation - no transition, matches the app's no-motion-on-overlays rule. */
+  .confirm-overlay {
     position: absolute;
     inset: 0;
     background: rgba(0, 0, 0, 0.55);
@@ -726,7 +835,7 @@
     justify-content: center;
     z-index: 20;
   }
-  .quit-panel {
+  .confirm-panel {
     background: #2c2c2c;
     border: 1px solid var(--stroke-strong);
     border-radius: var(--r-surface);
@@ -736,21 +845,21 @@
     flex-direction: column;
     gap: 12px;
   }
-  .quit-title {
+  .confirm-title {
     font-size: 13px;
     font-weight: 600;
   }
-  .quit-body {
+  .confirm-body {
     font-size: 12px;
     color: var(--fg-3);
   }
-  .quit-actions {
+  .confirm-actions {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
   }
   .ghost,
-  .quit-btn {
+  .danger-btn {
     padding: 5px 12px;
     font-size: 12px;
     border-radius: var(--r-control);
@@ -763,9 +872,12 @@
   .ghost:hover {
     background: var(--hover);
   }
-  .quit-btn {
+  .danger-btn {
     background: #c42b1c;
     color: #fff;
     font-weight: 600;
+  }
+  .danger-btn:hover {
+    background: #d13c2d;
   }
 </style>

@@ -16,7 +16,13 @@ export type Sound = {
   pitch: Pitch;
 };
 
-export type Profile = { id: string; name: string; sounds: Sound[] };
+export type Profile = {
+  id: string;
+  name: string;
+  sounds: Sound[];
+  /** A folder this profile mirrors; empty means it is hand-built. */
+  folder: string;
+};
 
 export type Config = {
   /** Schema version. Round-trip it untouched: Rust migrates on anything older. */
@@ -33,11 +39,20 @@ export type Config = {
 
 export const loadConfig = () => invoke<Config>("load_config");
 
-/** Persists, re-binds every hotkey, and returns the ones Windows refused. */
-export const saveConfig = (config: Config) => invoke<string[]>("save_config", { config });
+/**
+ * Persists and queues a re-bind. The shortcuts Windows refused arrive on the
+ * `hotkeys` event rather than as a return value - binding inline used to
+ * deadlock the main thread against a keypress and kill every hotkey.
+ */
+export const saveConfig = (config: Config) => invoke<void>("save_config", { config });
 
-export const importSounds = (paths: string[]) =>
-  invoke<Sound[]>("import_sounds", { paths });
+/** Copies into `dest` if given, else into the app's own sounds folder. */
+export const importSounds = (paths: string[], dest?: string) =>
+  invoke<Sound[]>("import_sounds", { paths, dest: dest || null });
+
+/** Re-reads a folder profile, keeping tuning and order for clips still there. */
+export const syncFolder = (dir: string, existing: Sound[]) =>
+  invoke<Sound[]>("sync_folder", { dir, existing });
 
 export const listDevices = () => invoke<string[]>("list_devices");
 
