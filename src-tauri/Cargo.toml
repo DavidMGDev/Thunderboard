@@ -30,6 +30,9 @@ windows-sys = { version = "0.60", features = [
     # ShowWindow / SetForegroundWindow. These resolve today only because a
     # dependency happens to enable the feature; ask for it ourselves.
     "Win32_UI_WindowsAndMessaging",
+    # MapVirtualKeyExW / GetKeyboardLayout, for resolving a physical key to the
+    # virtual key the user's actual keyboard layout gives it.
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [profile.release]

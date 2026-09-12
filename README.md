@@ -102,6 +102,34 @@ Avoid: anything `Win+…` (the shell and PowerToys own most of it), `Alt+Space`
 browser), and `` Ctrl+Shift+` `` (VS Code's new terminal). The app greys these
 out with the reason when you try to bind one.
 
+### Punctuation hotkeys and your keyboard layout
+
+This one cost the most to find, because the shortcut registered successfully
+and then did nothing, forever.
+
+`KeyboardEvent.code` names a *physical* key using US labels. The key that types
+`|` on a Latin American Spanish keyboard is in the US backquote position, so
+capture stores it as `Backquote` — which is correct, and also why the chip used
+to read `` ` `` for a key whose cap says `|`. `global_hotkey` then turns that
+name into a virtual key with a hard-coded **US** table: `Backquote → 0xC0`. But
+on that layout the physical key reports `0xDC`, and `0xC0` is the `ñ` key. So
+`RegisterHotKey` happily bound a key the user never pressed.
+
+Letters and digits are immune — their virtual keys are identical on every Latin
+layout. Only punctuation moves, which is why sound hotkeys on `Ctrl+Shift+1`
+worked while every attempt at a stop key failed.
+
+`retarget()` now resolves the physical key through `MapVirtualKeyEx` against the
+active layout and hands `global_hotkey` the name whose US mapping lands on the
+*real* virtual key. It is the identity on a US layout. Labels go through
+`navigator.keyboard.getLayoutMap()`, so a chip shows the keycap you actually
+press.
+
+Two consequences worth knowing. The layout is read at registration, so switching
+input language and then changing any setting re-binds against the new one. And a
+bare punctuation key bound globally is swallowed everywhere — bind `|` to stop
+and you cannot type `|` in Discord either.
+
 ### Two things that look like dead buttons
 
 Both of these cost an evening to find, so they are written down.

@@ -35,13 +35,37 @@ const GLYPHS: Record<string, string> = {
   Backquote: "`",
 };
 
+/**
+ * Physical key -> the character this keyboard actually types.
+ *
+ * `KeyboardEvent.code` names keys by US position, so the key that types `|` on
+ * a Latin American layout still arrives as "Backquote" and a chip would read
+ * `` ` ``. Asking the browser what the key really types makes the chip match
+ * the keycap. Stays empty where the API is missing, and GLYPHS covers that.
+ */
+let layoutChars = new Map<string, string>();
+
+/** Resolved before the app mounts, so the first render already has real keycaps. */
+export async function loadLayoutMap(): Promise<void> {
+  try {
+    const keyboard = (navigator as { keyboard?: { getLayoutMap?: () => Promise<Map<string, string>> } })
+      .keyboard;
+    if (!keyboard?.getLayoutMap) return;
+    layoutChars = new Map(await keyboard.getLayoutMap());
+  } catch {
+    /* no layout map here - the US glyph names are the fallback */
+  }
+}
+
 /** "Ctrl+Shift+Quote" -> "Ctrl + Shift + '". Display only. */
 export function label(shortcut: string): string {
   if (!shortcut) return "";
   return shortcut
     .split("+")
     .map((part) => {
-      if (GLYPHS[part]) return GLYPHS[part];
+      // Only the punctuation moves between layouts; everything else is stable,
+      // and the layout map's own names for them are worse than ours.
+      if (GLYPHS[part]) return layoutChars.get(part) ?? GLYPHS[part];
       return part
         .replace(/^Key/, "")
         .replace(/^Digit/, "")
@@ -97,7 +121,7 @@ export const SUGGESTED: { group: string; keys: string[]; note: string }[] = [
   {
     group: "Ctrl + Shift + punctuation",
     keys: PUNCTUATION.map((k) => `Ctrl+Shift+${k}`),
-    note: "Ten more. The app's own defaults live here, on ' and ;.",
+    note: "Ten more. The app's own defaults live here. These follow your keyboard layout, so the chip shows the key you actually press, not the US name for that position.",
   },
   {
     group: "Ctrl + Alt + number row",

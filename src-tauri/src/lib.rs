@@ -301,6 +301,81 @@ fn next_profile(app: &AppHandle) {
     rebind(app);
 }
 
+// ------------------------------------------------------- keyboard layout ----
+
+/// The punctuation keys whose virtual-key code moves with the keyboard layout.
+///
+/// Each entry is (name `KeyboardEvent.code` gives the key, its scan code, the
+/// virtual key a US layout puts there).
+///
+/// This exists because two layers disagree. `KeyboardEvent.code` names a
+/// *physical* key using US labels, so the key that types `|` on a Latin
+/// American Spanish keyboard still arrives as "Backquote". `global_hotkey` then
+/// turns that name into a virtual key with a hard-coded US table - Backquote
+/// becomes 0xC0. But on that layout the physical key reports 0xDC, and 0xC0 is
+/// the `ñ` key. So `RegisterHotKey` succeeds, binds a key the user never
+/// presses, and the shortcut silently does nothing forever.
+///
+/// Letters and digits are immune: their virtual keys are identical on every
+/// Latin layout. Only this set moves, which is why sound hotkeys on digits
+/// worked while stop, which lives on punctuation, never did.
+const LAYOUT_KEYS: [(&str, u32, u16); 11] = [
+    ("Minus", 0x0C, 0xBD),
+    ("Equal", 0x0D, 0xBB),
+    ("BracketLeft", 0x1A, 0xDB),
+    ("BracketRight", 0x1B, 0xDD),
+    ("Semicolon", 0x27, 0xBA),
+    ("Quote", 0x28, 0xDE),
+    ("Backquote", 0x29, 0xC0),
+    ("Backslash", 0x2B, 0xDC),
+    ("Comma", 0x33, 0xBC),
+    ("Period", 0x34, 0xBE),
+    ("Slash", 0x35, 0xBF),
+];
+
+/// Rewrites a shortcut's key so the US table downstream lands on the virtual
+/// key this layout really produces. `to_vk` maps a scan code to that key.
+///
+/// Anything but the layout-dependent punctuation is returned untouched, as is
+/// a key whose layout puts a virtual code the US table cannot name (`VK_OEM_102`
+/// on the extra key some European keyboards have). Better to fail registration
+/// visibly than to bind a different key than the one that was pressed.
+fn retarget(shortcut: &str, to_vk: impl Fn(u32) -> u16) -> String {
+    let (prefix, key) = match shortcut.rfind('+') {
+        Some(i) => shortcut.split_at(i + 1),
+        None => ("", shortcut),
+    };
+    let Some(&(_, scan, _)) = LAYOUT_KEYS.iter().find(|(name, _, _)| *name == key) else {
+        return shortcut.to_string();
+    };
+    let vk = to_vk(scan);
+    match LAYOUT_KEYS.iter().find(|(_, _, us_vk)| *us_vk == vk) {
+        Some((name, _, _)) => format!("{prefix}{name}"),
+        None => shortcut.to_string(),
+    }
+}
+
+/// The scan code's virtual key under the layout this thread is using.
+#[cfg(windows)]
+fn active_layout_vk(scan: u32) -> u16 {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyboardLayout, MapVirtualKeyExW, MAPVK_VSC_TO_VK_EX,
+    };
+    // Layout of our own thread, which is the current input language. Re-binding
+    // happens on every save, so switching language and touching settings picks
+    // the new one up.
+    unsafe { MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0)) as u16 }
+}
+
+#[cfg(not(windows))]
+fn active_layout_vk(scan: u32) -> u16 {
+    LAYOUT_KEYS
+        .iter()
+        .find(|(_, s, _)| *s == scan)
+        .map(|(_, _, vk)| *vk)
+        .unwrap_or(0)
+}
+
 // -------------------------------------------------------------- hotkeys -----
 
 /// Re-binds every hotkey, on the main thread, never inline.
@@ -345,7 +420,10 @@ fn apply(app: &AppHandle) -> Vec<String> {
         if key.is_empty() {
             return;
         }
-        let hit = gs.on_shortcut(key, move |app, _shortcut, event| {
+        // Registered against the key this layout actually produces; reported
+        // back to the UI under the name the config stores.
+        let target = retarget(key, active_layout_vk);
+        let hit = gs.on_shortcut(target.as_str(), move |app, _shortcut, event| {
             // Without this the action runs twice, once per edge.
             if event.state() == ShortcutState::Pressed {
                 action(app);
@@ -947,6 +1025,48 @@ mod tests {
             again.iter().map(|s| &s.id).collect::<Vec<_>>(),
             out.iter().map(|s| &s.id).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn punctuation_retargets_to_the_layout() {
+        // Latin American Spanish, as reported by MapVirtualKeyEx for layout
+        // 0x080A140A. The physical key the UI calls Backquote types `|` and
+        // reports 0xDC; 0xC0 sits on the `ñ` key instead.
+        let latam = |scan: u32| match scan {
+            0x29 => 0xDC, // Backquote position -> the `|` key
+            0x2B => 0xBF, // Backslash position -> `}`
+            0x27 => 0xC0, // Semicolon position -> `ñ`
+            0x28 => 0xDE, // Quote position     -> `{`
+            _ => 0,
+        };
+
+        // The bug: stop on the `|` key used to register 0xC0, the `ñ` key.
+        // 0xDC is what the US table calls Backslash, so that is what gets
+        // registered - and pressing `|` now fires it.
+        assert_eq!(retarget("Backquote", latam), "Backslash");
+        assert_eq!(retarget("Shift+Backquote", latam), "Shift+Backslash");
+        assert_eq!(retarget("Ctrl+Shift+Backquote", latam), "Ctrl+Shift+Backslash");
+        // Quote happens to sit on the same virtual key on both layouts.
+        assert_eq!(retarget("Ctrl+Shift+Quote", latam), "Ctrl+Shift+Quote");
+
+        // Letters, digits and F-keys never move, so they are passed straight
+        // through - which is why the sound hotkeys worked all along.
+        for untouched in ["Ctrl+Shift+Digit1", "Ctrl+Shift+KeyQ", "F13", "Ctrl+Alt+Shift+F13"] {
+            assert_eq!(retarget(untouched, latam), untouched);
+        }
+
+        // A US layout is the identity case: nothing should be rewritten.
+        let us = |scan: u32| {
+            LAYOUT_KEYS.iter().find(|(_, s, _)| *s == scan).map(|(_, _, vk)| *vk).unwrap_or(0)
+        };
+        for (name, _, _) in LAYOUT_KEYS {
+            assert_eq!(retarget(name, us), name);
+            assert_eq!(retarget(&format!("Ctrl+Shift+{name}"), us), format!("Ctrl+Shift+{name}"));
+        }
+
+        // A layout that puts something unnameable here is left alone rather
+        // than silently bound to the wrong key.
+        assert_eq!(retarget("Backquote", |_| 0xE2), "Backquote");
     }
 
     #[test]
