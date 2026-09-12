@@ -91,6 +91,8 @@ pub fn spawn() -> Sender<Cmd> {
     std::thread::spawn(move || {
         let mut out: Option<Bus> = None;
         let mut monitor: Option<Bus> = None;
+        // What the buses were opened for, so an unchanged re-bind is free.
+        let mut open_for = (String::new(), String::new());
         // Clips are small and there are tens of them, so holding every one that
         // has been played keeps the hotkey path off the disk entirely.
         let mut cache: HashMap<String, Vec<u8>> = HashMap::new();
@@ -98,11 +100,25 @@ pub fn spawn() -> Sender<Cmd> {
         while let Ok(cmd) = rx.recv() {
             match cmd {
                 Cmd::Devices { out: o, monitor: m } => {
+                    // Every save re-binds, and every re-bind sends this - which
+                    // with folder profiles is now every time the window opens.
+                    // Tearing down and re-opening two WASAPI streams for that is
+                    // pure waste. A bus that failed to open is still retried, so
+                    // a cable that comes back gets picked up.
+                    if (o.as_str(), m.as_str()) == (open_for.0.as_str(), open_for.1.as_str())
+                        && out.is_some()
+                    {
+                        continue;
+                    }
+                    // Let the old streams go before asking for the new ones.
+                    drop(out.take());
+                    drop(monitor.take());
                     out = open(&o);
                     monitor = if m.is_empty() { None } else { open(&m) };
                     if out.is_none() {
                         eprintln!("output device {o:?} not found");
                     }
+                    open_for = (o, m);
                 }
                 Cmd::Stop => {
                     for bus in [out.as_ref(), monitor.as_ref()].into_iter().flatten() {

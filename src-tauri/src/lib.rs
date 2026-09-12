@@ -562,10 +562,17 @@ fn list_devices() -> Vec<String> {
     audio::output_devices()
 }
 
-/// Audition on the monitor bus only - never out to the call.
+/// Fires a clip from the UI.
+///
+/// `audition` keeps it on the monitor bus, which is what tuning the offset
+/// wants - dragging that slider should not blast the call on every step. A
+/// plain click on a sound is not an audition though: it is the board being
+/// used, and it goes out like a hotkey would. Folder profiles made that
+/// distinction matter, because their clips arrive unbound and clicking is the
+/// only way to fire them at all.
 #[tauri::command]
-fn preview(app: AppHandle, id: String) {
-    play(&app, &id, true);
+fn preview(app: AppHandle, id: String, audition: bool) {
+    play(&app, &id, audition);
 }
 
 #[tauri::command]

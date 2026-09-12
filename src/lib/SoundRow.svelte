@@ -14,6 +14,7 @@
     onListen,
     onDelete,
     onPreview,
+    onAudition,
   }: {
     sound: Sound;
     /** Gallery pads play on click; list rows expand on click. */
@@ -25,7 +26,10 @@
     onToggle: () => void;
     onListen: () => void;
     onDelete: () => void;
+    /** Fires the clip for real - monitor and out, like the hotkey. */
     onPreview: () => void;
+    /** Monitor bus only, for hearing an offset while dragging it. */
+    onAudition: () => void;
   } = $props();
 
   let renaming = $state(false);
@@ -65,10 +69,22 @@
     else onToggle();
   }
 
+  /**
+   * Step's min/max are the floor and ceiling a walk may wander to, so they are
+   * deliberately wide. Random picks a fresh rate every single press, and that
+   * same span turns every clip into a lottery - so it starts at a gentle
+   * +/-0.20 instead of inheriting the walk's limits.
+   */
+  const RANDOM_MIN = 0.8;
+  const RANDOM_MAX = 1.2;
+
   function setMode(mode: Pitch["mode"]) {
     if (sound.pitch.mode === mode) return;
     const { min, max } = sound.pitch;
-    sound.pitch = mode === "step" ? { mode: "step", step: -0.12, min, max } : { mode: "random", min, max };
+    sound.pitch =
+      mode === "step"
+        ? { mode: "step", step: -0.12, min, max }
+        : { mode: "random", min: RANDOM_MIN, max: RANDOM_MAX };
   }
 
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -164,7 +180,7 @@
     },
     0,
     30,
-    () => onPreview(),
+    () => onAudition(),
   );
 </script>
 
@@ -292,7 +308,7 @@
           max="2"
           step="0.005"
           bind:value={sound.offset}
-          onchange={onPreview}
+          onchange={onAudition}
           onclick={(e) => e.stopPropagation()}
           style="--fill: {offsetPct}%"
         />

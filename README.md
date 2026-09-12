@@ -9,11 +9,19 @@ Tauri 2 + Svelte 5 + rodio.
 
 - **Global hotkeys.** Fire clips with the window closed, from inside a game.
 - **Cut-previous.** A new hotkey stops whatever was playing. No layering.
+- **Clicking fires for real.** The speaker button on a row, and a pad in gallery
+  view, go out to the call exactly like the hotkey does. Only the offset
+  slider auditions on your monitor alone, because dragging it should not blast
+  the call on every step. This matters most for folder profiles, whose clips
+  arrive unbound — clicking is the only way to fire them.
 - **Pitch mod.** A toggle key. While it is on, repeatedly hitting the *same*
   clip's hotkey walks its playback rate — down by a fixed step each press, or to
   a fresh random rate each press, configured per sound. Rate is pitch (rodio
   resamples), so down also means slower. The walk resets when you hit a
-  different clip or toggle pitch mod off, and nothing else resets it.
+  different clip or toggle pitch mod off, and nothing else resets it. Step's
+  min/max are the walk's floor and ceiling, so they are wide by default;
+  switching a clip to Random starts at a gentle ±0.20 instead, because Random
+  re-rolls on *every* press and the walk's full span turns a clip into a lottery.
 - **Two outputs.** One bus goes to the virtual cable Discord listens to, the
   other to your headphones so you hear what you fired.
 - **Profiles.** Independent sets of sounds and bindings; switch from the header
@@ -23,7 +31,9 @@ Tauri 2 + Svelte 5 + rodio.
   you open the window and on the sync button, and rows keep their hotkey,
   volume, offset and position across syncs. Dropping files on a folder profile
   puts them *in* that folder. Deleting a row leaves the file, so the next sync
-  brings it back; delete the file to be rid of it.
+  brings it back; delete the file to be rid of it. Synced clips arrive with no
+  hotkey: there are more clips in a folder than there are free combos, so bind
+  the handful you want and click the rest.
 - **List or gallery.** The same profile as a dense list of rows, or as a grid of
   pads you click to fire. Toggle in the header; the choice sticks. In list view
   rows drag vertically to reorder, with a line showing where the row will land.

@@ -56,8 +56,13 @@ export const syncFolder = (dir: string, existing: Sound[]) =>
 
 export const listDevices = () => invoke<string[]>("list_devices");
 
-/** Auditions on the monitor bus at normal pitch — never out to the call. */
-export const preview = (id: string) => invoke<void>("preview", { id });
+/**
+ * Fires a clip from the UI. Goes out to the call like a hotkey would; pass
+ * `audition` to keep it on the monitor bus, which is what the offset slider
+ * wants while you drag it.
+ */
+export const preview = (id: string, audition = false) =>
+  invoke<void>("preview", { id, audition });
 
 export const stopAll = () => invoke<void>("stop_all");
 

@@ -268,11 +268,11 @@
   // preview() runs against the backend's saved config, so an offset/volume
   // drag that hasn't hit the 250ms debounce yet would preview the old value.
   // Flush the pending save first so preview matches what's on screen.
-  async function previewNow(id: string) {
+  async function previewNow(id: string, audition = false) {
     if (!config) return;
     window.clearTimeout(saveHandle);
     await saveConfig(config);
-    await preview(id);
+    await preview(id, audition);
   }
 
   async function pickFiles() {
@@ -522,6 +522,7 @@
             }}
             onDelete={() => removeSound(s.id)}
             onPreview={() => void previewNow(s.id)}
+            onAudition={() => void previewNow(s.id, true)}
           />
         </div>
       {/each}
